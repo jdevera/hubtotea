@@ -44,7 +44,7 @@ func (c *Config) resolve() error {
 	if c.GiteaUsername == "" {
 		client, err := GiteaClient(context.Background(), *c)
 		if err != nil {
-			log.Fatalf("Error creating Gitea client")
+			log.Fatalf("Error creating Gitea client: %s\n", err)
 		}
 		username, err := GiteaGetUsername(client)
 		if err != nil {
