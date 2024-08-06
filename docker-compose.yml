@@ -1,0 +1,7 @@
+services:
+  hubtotea:
+    image: jdevera/hubtotea:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: docker-compose.env
