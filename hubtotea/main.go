@@ -8,19 +8,16 @@ import (
 	"time"
 )
 
-func MirrorWorker(ctx context.Context, id int, wg *sync.WaitGroup, repos <-chan *github.Repository, config Config) {
+func MirrorWorker(ctx context.Context, id int, wg *sync.WaitGroup, repos <-chan *github.Repository, config Config, resultsStats map[MirrorResult]int) {
 	defer wg.Done()
 	log.Printf("[Worker %d] Starting\n", id)
 	for repo := range repos {
-		if config.DryRun {
-			log.Printf("[Worker %d] [DRY-RUN] Would create repository %s on Gitea\n", id, *repo.FullName)
-			continue
-		}
-		log.Printf("[Worker %d] Mirroring repository %s on Gitea\n", id, *repo.FullName)
-		err := GiteaMirror(ctx, repo, config)
+		log.Printf("[Worker %d] Processing repository %s\n", id, *repo.FullName)
+		res, err := GiteaMirror(ctx, repo, config)
 		if err != nil {
 			log.Printf("[Worker %d] Error mirroring repository %s: %s\n", id, *repo.FullName, err)
 		}
+		resultsStats[res]++
 	}
 	log.Printf("[Worker %d] Done\n", id)
 }
@@ -39,9 +36,11 @@ func SyncRepoList(ctx context.Context, config Config) error {
 	repoChan := make(chan *github.Repository, len(repos))
 	var wg sync.WaitGroup
 
+	resultsStats := make(map[MirrorResult]int)
+
 	for workerId := 0; workerId < config.NumWorkers; workerId++ {
 		wg.Add(1)
-		go MirrorWorker(ctx, workerId, &wg, repoChan, config)
+		go MirrorWorker(ctx, workerId, &wg, repoChan, config, resultsStats)
 	}
 
 	for _, repo := range repos {
@@ -50,6 +49,15 @@ func SyncRepoList(ctx context.Context, config Config) error {
 	close(repoChan)
 
 	wg.Wait()
+
+	log.Printf("--------------------------------------------------\n")
+	log.Printf("Results:\n")
+	log.Printf("  Total Read: %d\n", len(repos))
+	log.Printf("  Created: %d\n", resultsStats[Created])
+	log.Printf("  Skipped: %d\n", resultsStats[Skipped])
+	log.Printf("  WouldCreate: %d\n", resultsStats[WouldCreate])
+	log.Printf("  Failed: %d\n", resultsStats[Failed])
+	log.Printf("--------------------------------------------------\n")
 
 	return nil
 }

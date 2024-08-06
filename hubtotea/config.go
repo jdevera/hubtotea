@@ -22,22 +22,22 @@ type Config struct {
 }
 
 func (c *Config) log() {
-	log.Printf("Github Username: %s\n", c.GithubUsername)
-	log.Printf("Gitea URL: %s\n", c.GiteaUrl)
-	log.Printf("Gitea Token: ****\n")
-	log.Printf("Gitea Username: %s\n", c.GiteaUsername)
+	log.Printf("Configuration:\n")
+	log.Printf("  Github Username: %s\n", c.GithubUsername)
+	log.Printf("  Gitea URL: %s\n", c.GiteaUrl)
+	log.Printf("  Gitea Token: ****\n")
+	log.Printf("  Gitea Username: %s\n", c.GiteaUsername)
 	if c.GithubToken != nil {
-		log.Printf("Github Token: %s\n", *c.GithubToken) // Dereference pointer to print value
+		log.Printf("  Github Token: %s\n", *c.GithubToken) // Dereference pointer to print value
 	} else {
-		log.Printf("Github Token: Not provided\n")
+		log.Printf("  Github Token: Not provided\n")
 	}
-	log.Printf("Mirror Public Repos: %t\n", c.MirrorPublicRepos)
-	log.Printf("Mirror Private Repos: %t\n", c.MirrorPrivateRepos)
-	log.Printf("Mirror Forks: %t\n", c.MirrorForks)
-	log.Printf("SyncInterval: %d (seconds)\n", c.SyncInterval)
-	log.Printf("Number of Workers: %d\n", c.NumWorkers)
-	log.Printf("Dry Run: %t\n", c.DryRun)
-
+	log.Printf("  Mirror Public Repos: %t\n", c.MirrorPublicRepos)
+	log.Printf("  Mirror Private Repos: %t\n", c.MirrorPrivateRepos)
+	log.Printf("  Mirror Forks: %t\n", c.MirrorForks)
+	log.Printf("  SyncInterval: %d (seconds)\n", c.SyncInterval)
+	log.Printf("  Number of Workers: %d\n", c.NumWorkers)
+	log.Printf("  Dry Run: %t\n", c.DryRun)
 }
 
 func (c *Config) resolve() error {
