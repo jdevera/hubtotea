@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
-	"os"
+	"strings"
 )
 
 type Config struct {
@@ -44,45 +45,60 @@ func (c *Config) resolve() error {
 	if c.GiteaUsername == "" {
 		client, err := GiteaClient(context.Background(), *c)
 		if err != nil {
-			log.Fatalf("Error creating Gitea client: %s\n", err)
+			return fmt.Errorf("error creating Gitea client: %w\n", err)
 		}
 		username, err := GiteaGetUsername(client)
 		if err != nil {
-			return fmt.Errorf("error getting Gitea username: %s", err)
+			return fmt.Errorf("error getting Gitea username: %w", err)
 		}
 		c.GiteaUsername = username
 	}
 	return nil
 }
 
-func (c *Config) validate() {
-	err := false
+func (c *Config) validate() error {
+	errors := []string{}
 	if c.GithubUsername == "" {
-		log.Println("Error: GITHUB_USERNAME environment variable not set")
-		err = true
+		errors = append(errors, "GITHUB_USERNAME environment variable not set")
 	}
 	if c.GiteaUrl == "" {
-		log.Println("Error: GITEA_URL environment variable not set")
-		err = true
+		errors = append(errors, "GITEA_URL environment variable not set")
 	}
 	if c.GiteaToken == "" {
-		log.Println("Error: GITEA_TOKEN environment variable not set")
-		err = true
+		errors = append(errors, "GITEA_TOKEN environment variable not set")
 	}
 	if c.MirrorPrivateRepos && c.GithubToken == nil {
-		log.Println("Error: GITHUB_TOKEN environment variable not set (required for mirroring private repos)")
-		err = true
+		errors = append(errors, "GITHUB_TOKEN environment variable not set (required for mirroring private repos)")
 	}
-	if err {
-		os.Exit(1)
+	if len(errors) > 0 {
+		return fmt.Errorf("config validation errors: %s", strings.Join(errors, ", "))
 	}
+	return nil
 }
 
 func MakeConfigFromEnv() (Config, error) {
+	var envErrors []error
+
+	githubUsername, err := GetEnvStrict("GITHUB_USERNAME")
+	if err != nil {
+		envErrors = append(envErrors, err)
+	}
+	giteaUrl, err := GetEnvStrict("GITEA_URL")
+	if err != nil {
+		envErrors = append(envErrors, err)
+	}
+	giteaToken, err := GetEnvStrict("GITEA_TOKEN")
+	if err != nil {
+		envErrors = append(envErrors, err)
+	}
+	if len(envErrors) > 0 {
+		return Config{}, errors.Join(envErrors...)
+	}
+
 	c := Config{
-		GithubUsername:     GetEnvStrict("GITHUB_USERNAME"),
-		GiteaUrl:           GetEnvStrict("GITEA_URL"),
-		GiteaToken:         GetEnvStrict("GITEA_TOKEN"),
+		GithubUsername:     githubUsername,
+		GiteaUrl:           giteaUrl,
+		GiteaToken:         giteaToken,
 		GithubToken:        GetEnvOptional("GITHUB_TOKEN"),
 		NumWorkers:         GetEnvInt("HUBTOTEA_NUM_WORKERS", 5),
 		MirrorPublicRepos:  GetEnvBool("HUBTOTEA_MIRROR_PUBLIC_REPOS", true),
@@ -91,10 +107,13 @@ func MakeConfigFromEnv() (Config, error) {
 		DryRun:             GetEnvBool("HUBTOTEA_DRY_RUN", false),
 		SyncInterval:       GetEnvInt("HUBTOTEA_SYNC_INTERVAL", 3600),
 	}
-	c.validate()
-	err := c.resolve()
+	err = c.validate()
 	if err != nil {
-		return c, err
+		return Config{}, fmt.Errorf("error validating config: %w", err)
+	}
+	err = c.resolve()
+	if err != nil {
+		return Config{}, fmt.Errorf("error resolving config: %w", err)
 	}
 	return c, nil
 }

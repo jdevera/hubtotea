@@ -3,6 +3,7 @@ package main
 import (
 	"code.gitea.io/sdk/gitea"
 	"context"
+	"fmt"
 	"github.com/google/go-github/v63/github"
 	"log"
 )
@@ -10,7 +11,8 @@ import (
 type MirrorResult int
 
 const (
-	Created MirrorResult = iota
+	Input MirrorResult = iota
+	Created
 	WouldCreate
 	Skipped
 	Failed
@@ -32,11 +34,10 @@ func GiteaClient(ctx context.Context, config Config) (*gitea.Client, error) {
 // repository is created with the same name and description as the GitHub
 // repository. The repository is created as a mirror of the GitHub repository.
 func GiteaMirror(ctx context.Context, githubRepo *github.Repository, config Config) (MirrorResult, error) {
-	if config.DryRun {
-		log.Printf("[DRY-RUN] Would create repository %s on Gitea\n", *githubRepo.FullName)
-		return WouldCreate, nil
+	prefix := ""
+	if workerId := ctx.Value("worker_id"); workerId != nil {
+		prefix = fmt.Sprintf("[Worker %d] ", workerId)
 	}
-	log.Printf("Mirroring repository %s on Gitea\n", *githubRepo.FullName)
 	client, err := gitea.NewClient(config.GiteaUrl,
 		gitea.SetToken(config.GiteaToken),
 		gitea.SetContext(ctx),
@@ -46,10 +47,14 @@ func GiteaMirror(ctx context.Context, githubRepo *github.Repository, config Conf
 	}
 	giteaRepo, _, err := client.GetRepo(config.GiteaUsername, *githubRepo.Name)
 	if err == nil {
-		log.Printf("Skipping repository %s. It already exists on Gitea\n", giteaRepo.FullName)
+		log.Printf("%sSkipping repository %s. It already exists on Gitea\n", prefix, giteaRepo.FullName)
 		return Skipped, nil
 	}
-	log.Printf("Creating repository %s on Gitea\n", *githubRepo.FullName)
+	if config.DryRun {
+		log.Printf("%s[DRY-RUN] Would create repository %s on Gitea\n", prefix, *githubRepo.FullName)
+		return WouldCreate, nil
+	}
+	log.Printf("%sCreating repository %s on Gitea\n", prefix, *githubRepo.FullName)
 
 	githubAuth := ""
 	if config.GithubToken != nil {
@@ -70,6 +75,6 @@ func GiteaMirror(ctx context.Context, githubRepo *github.Repository, config Conf
 	if err != nil {
 		return Failed, err
 	}
-	log.Printf("Repository %s created on Gitea\n", *githubRepo.FullName)
+	log.Printf("%sRepository %s created on Gitea\n", prefix, *githubRepo.FullName)
 	return Created, nil
 }

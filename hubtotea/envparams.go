@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -27,13 +28,12 @@ func GetEnvInt(key string, defValue int) int {
 	return num
 }
 
-func GetEnvStrict(key string) string {
+func GetEnvStrict(key string) (string, error) {
 	value, ok := os.LookupEnv(key)
 	if !ok {
-		log.Printf("Error: %s environment variable not set\n", key)
-		os.Exit(1)
+		return "", fmt.Errorf("environment variable %s not set", key)
 	}
-	return value
+	return value, nil
 }
 
 func GetEnvOptional(key string) *string {
