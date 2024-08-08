@@ -16,7 +16,6 @@ docker run \
     jdevera/hubtotea:latest
 ```
 
-
 ## What can be mirrored
 
 - Public Repos: All public repos of the given user, **excluding forks**
@@ -41,3 +40,22 @@ Each of these groups can be enabled or disabled with the environment variables.
 | `HUBTOTEA_SYNC_INTERVAL`        | The interval in seconds to wait between syncs. Set to 0 to run only once         | No        | `3600`  |
 
 
+# Custom certificates
+
+If your Gitea instance is served with a self-signed certificate, or you have a custom CA, `hubtotea` will refuse to connect.
+
+You can provide a custom CA certificate by mounting it in the container. Make sure any additional certificates you want to be trusted are available in the `/usr/local/share/ca-certificates` directory.
+
+With docker:
+```bash
+-v /dir/with/certificates:/usr/local/share/ca-certificates:ro
+```
+
+With docker compose:
+
+```yaml
+volumes:
+  - /dir/with/certificates:/usr/local/share/ca-certificates:ro
+```
+
+The container will automatically trust any certificates in that directory.

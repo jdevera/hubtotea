@@ -20,10 +20,15 @@ FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates
 
-WORKDIR /root/
+WORKDIR /app
 
 # Copy the pre-built binary from the previous stage
 COPY --from=builder /app/hubtotea .
+
+# COPY the entrypoint script that will load certificates and run the binary
+COPY docker/entrypoint.sh .
+
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Run the executable
 CMD ["./hubtotea"]
