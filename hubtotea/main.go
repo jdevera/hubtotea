@@ -10,6 +10,9 @@ import (
 
 type SyncResult map[MirrorResult]int
 
+// Version of the application. It will be set during the build process.
+var Version = "dev"
+
 func MirrorWorker(ctx context.Context, id int, wg *sync.WaitGroup, repos <-chan *github.Repository, stats chan<- MirrorResult, config Config) {
 	defer wg.Done()
 	log.Printf("[Worker %d] Starting\n", id)
@@ -94,12 +97,13 @@ func main() {
 	log.SetFlags(0)
 	config, err := MakeConfigFromEnv()
 	if err != nil {
-		log.Fatalf("Config error: %s\n", err)
+		log.Fatalf("HubToTea version: %s\nConfig error: %s\n", Version, err)
 	}
 
 	runEvery(time.Duration(config.SyncInterval)*time.Second,
 		func(runCount int) {
 			log.Println("--------------------------------------------------")
+			log.Printf("HubToTea version: %s\n", Version)
 			log.Printf("Run #%d\n", runCount)
 			config.log()
 			log.Println("--------------------------------------------------")
