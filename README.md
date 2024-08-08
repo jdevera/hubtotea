@@ -40,7 +40,7 @@ Each of these groups can be enabled or disabled with the environment variables.
 | `HUBTOTEA_SYNC_INTERVAL`        | The interval in seconds to wait between syncs. Set to 0 to run only once         | No        | `3600`  |
 
 
-# Custom certificates
+## Custom certificates
 
 If your Gitea instance is served with a self-signed certificate, or you have a custom CA, `hubtotea` will refuse to connect.
 
