@@ -29,7 +29,7 @@ func (c *Config) log() {
 	log.Printf("  Gitea Token: ****\n")
 	log.Printf("  Gitea Username: %s\n", c.GiteaUsername)
 	if c.GithubToken != nil {
-		log.Printf("  Github Token: %s\n", *c.GithubToken) // Dereference pointer to print value
+		log.Printf("  Github Token: ****\n") // Dereference pointer to print value
 	} else {
 		log.Printf("  Github Token: Not provided\n")
 	}
