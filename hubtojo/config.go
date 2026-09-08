@@ -10,19 +10,22 @@ import (
 )
 
 type Config struct {
-	GithubUsername     string
-	ForgejoUrl         string
-	ForgejoToken       string
-	ForgejoUsername    string
-	GithubToken        *string
-	NumWorkers         int
-	MirrorPublicRepos  bool
-	MirrorPrivateRepos bool
-	MirrorForks        bool
-	DryRun             bool
-	SyncInterval       int
-	RunTimeout         time.Duration
-	WebAddr            string
+	GithubUsername          string
+	ForgejoUrl              string
+	ForgejoToken            string
+	ForgejoUsername         string
+	GithubToken             *string
+	NumWorkers              int
+	MirrorPublicRepos       bool
+	MirrorPrivateRepos      bool
+	MirrorForks             bool
+	MirrorStarredRepos      bool
+	StarredOrg              string
+	MaxStarredCreatesPerRun int
+	DryRun                  bool
+	SyncInterval            int
+	RunTimeout              time.Duration
+	WebAddr                 string
 }
 
 func (c *Config) log() {
@@ -39,6 +42,11 @@ func (c *Config) log() {
 	log.Printf("  Mirror Public Repos: %t\n", c.MirrorPublicRepos)
 	log.Printf("  Mirror Private Repos: %t\n", c.MirrorPrivateRepos)
 	log.Printf("  Mirror Forks: %t\n", c.MirrorForks)
+	log.Printf("  Mirror Starred Repos: %t\n", c.MirrorStarredRepos)
+	if c.MirrorStarredRepos {
+		log.Printf("  Starred Repository Organization: %s\n", c.StarredOrg)
+		log.Printf("  Maximum Starred Creates Per Run: %d\n", c.MaxStarredCreatesPerRun)
+	}
 	log.Printf("  SyncInterval: %d (seconds)\n", c.SyncInterval)
 	log.Printf("  Run Timeout: %s\n", c.RunTimeout)
 	log.Printf("  Web Address: %s\n", c.WebAddr)
@@ -74,8 +82,8 @@ func (c *Config) validate() error {
 	if c.ForgejoToken == "" {
 		errors = append(errors, "FORGEJO_TOKEN environment variable not set")
 	}
-	if c.MirrorPrivateRepos && (c.GithubToken == nil || strings.TrimSpace(*c.GithubToken) == "") {
-		errors = append(errors, "GITHUB_TOKEN environment variable not set (required for mirroring private repos)")
+	if (c.MirrorPrivateRepos || c.MirrorStarredRepos) && (c.GithubToken == nil || strings.TrimSpace(*c.GithubToken) == "") {
+		errors = append(errors, "GITHUB_TOKEN environment variable not set (required for mirroring private or starred repos)")
 	}
 	if c.NumWorkers <= 0 {
 		errors = append(errors, "HUBTOJO_NUM_WORKERS must be greater than 0")
@@ -85,6 +93,12 @@ func (c *Config) validate() error {
 	}
 	if c.RunTimeout <= 0 {
 		errors = append(errors, "HUBTOJO_RUN_TIMEOUT must be greater than 0")
+	}
+	if c.MirrorStarredRepos && strings.TrimSpace(c.StarredOrg) == "" {
+		errors = append(errors, "HUBTOJO_STARRED_ORG must not be empty when mirroring starred repos")
+	}
+	if c.MaxStarredCreatesPerRun < 0 {
+		errors = append(errors, "HUBTOJO_MAX_STARRED_CREATES_PER_RUN must be greater than or equal to 0")
 	}
 	if len(errors) > 0 {
 		return fmt.Errorf("config validation errors: %s", strings.Join(errors, ", "))
@@ -123,6 +137,14 @@ func MakeConfigFromEnv() (Config, error) {
 	if err != nil {
 		envErrors = append(envErrors, err)
 	}
+	mirrorStarredRepos, err := GetEnvBool("HUBTOJO_MIRROR_STARRED_REPOS", false)
+	if err != nil {
+		envErrors = append(envErrors, err)
+	}
+	maxStarredCreates, err := GetEnvInt("HUBTOJO_MAX_STARRED_CREATES_PER_RUN", 25)
+	if err != nil {
+		envErrors = append(envErrors, err)
+	}
 	dryRun, err := GetEnvBool("HUBTOJO_DRY_RUN", false)
 	if err != nil {
 		envErrors = append(envErrors, err)
@@ -140,18 +162,21 @@ func MakeConfigFromEnv() (Config, error) {
 	}
 
 	c := Config{
-		GithubUsername:     githubUsername,
-		ForgejoUrl:         forgejoUrl,
-		ForgejoToken:       forgejoToken,
-		GithubToken:        GetEnvOptional("GITHUB_TOKEN"),
-		NumWorkers:         numWorkers,
-		MirrorPublicRepos:  mirrorPublicRepos,
-		MirrorPrivateRepos: mirrorPrivateRepos,
-		MirrorForks:        mirrorForks,
-		DryRun:             dryRun,
-		SyncInterval:       syncInterval,
-		RunTimeout:         time.Duration(runTimeout) * time.Second,
-		WebAddr:            GetEnvString("HUBTOJO_WEB_ADDR", ":8080"),
+		GithubUsername:          githubUsername,
+		ForgejoUrl:              forgejoUrl,
+		ForgejoToken:            forgejoToken,
+		GithubToken:             GetEnvOptional("GITHUB_TOKEN"),
+		NumWorkers:              numWorkers,
+		MirrorPublicRepos:       mirrorPublicRepos,
+		MirrorPrivateRepos:      mirrorPrivateRepos,
+		MirrorForks:             mirrorForks,
+		MirrorStarredRepos:      mirrorStarredRepos,
+		StarredOrg:              strings.TrimSpace(GetEnvString("HUBTOJO_STARRED_ORG", "github-stars")),
+		MaxStarredCreatesPerRun: maxStarredCreates,
+		DryRun:                  dryRun,
+		SyncInterval:            syncInterval,
+		RunTimeout:              time.Duration(runTimeout) * time.Second,
+		WebAddr:                 GetEnvString("HUBTOJO_WEB_ADDR", ":8080"),
 	}
 	err = c.validate()
 	if err != nil {

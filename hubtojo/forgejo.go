@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"codeberg.org/mvdkleijn/forgejo-sdk/forgejo/v3"
-	"github.com/google/go-github/v63/github"
 )
 
 type MirrorResult int
@@ -17,6 +16,16 @@ const (
 	WouldCreate
 	Skipped
 	Failed
+	Deferred
+)
+
+type OrganizationResult string
+
+const (
+	OrganizationCreated     OrganizationResult = "created"
+	OrganizationWouldCreate OrganizationResult = "would_create"
+	OrganizationExisting    OrganizationResult = "existing"
+	OrganizationFailed      OrganizationResult = "failed"
 )
 
 func ForgejoGetUsername(client *forgejo.Client) (string, error) {
@@ -31,14 +40,51 @@ func ForgejoClient(ctx context.Context, config Config) (*forgejo.Client, error) 
 	return forgejo.NewClient(config.ForgejoUrl, forgejo.SetToken(config.ForgejoToken), forgejo.SetContext(ctx))
 }
 
-// ForgejoMirror creates a repository on Forgejo for the given GitHub repository. The
-// repository is created with the same name and description as the GitHub
-// repository. The repository is created as a mirror of the GitHub repository.
-func ForgejoMirror(ctx context.Context, githubRepo *github.Repository, config Config) (MirrorResult, error) {
+func EnsureStarredOrganization(ctx context.Context, config Config) (OrganizationResult, error) {
+	client, err := ForgejoClient(ctx, config)
+	if err != nil {
+		return OrganizationFailed, err
+	}
+	_, resp, err := client.GetOrg(config.StarredOrg)
+	if err == nil {
+		permissions, _, permissionsErr := client.GetOrgPermissions(config.StarredOrg, config.ForgejoUsername)
+		if permissionsErr != nil {
+			return OrganizationFailed, fmt.Errorf("check permissions for Forgejo organization %q: %w", config.StarredOrg, permissionsErr)
+		}
+		if !permissions.IsOwner {
+			return OrganizationFailed, fmt.Errorf("Forgejo user %q is not an owner of organization %q", config.ForgejoUsername, config.StarredOrg)
+		}
+		log.Printf("Using existing Forgejo organization %s for starred repositories\n", config.StarredOrg)
+		return OrganizationExisting, nil
+	}
+	if resp == nil || resp.StatusCode != http.StatusNotFound {
+		return OrganizationFailed, fmt.Errorf("check Forgejo organization %q: %w", config.StarredOrg, err)
+	}
+	if config.DryRun {
+		log.Printf("[DRY-RUN] Would create Forgejo organization %s for starred repositories\n", config.StarredOrg)
+		return OrganizationWouldCreate, nil
+	}
+
+	_, _, err = client.CreateOrg(forgejo.CreateOrgOption{
+		Name:        config.StarredOrg,
+		FullName:    "GitHub starred repository archive",
+		Description: "GitHub starred repositories mirrored by HubToJo",
+		Visibility:  forgejo.VisibleTypePublic,
+	})
+	if err != nil {
+		return OrganizationFailed, fmt.Errorf("create Forgejo organization %q: %w", config.StarredOrg, err)
+	}
+	log.Printf("Created Forgejo organization %s for starred repositories\n", config.StarredOrg)
+	return OrganizationCreated, nil
+}
+
+// ForgejoMirror creates a Forgejo mirror at the planned destination.
+func ForgejoMirror(ctx context.Context, plan RepositoryPlan, config Config, limiter *creationLimiter) (MirrorResult, error) {
 	prefix := ""
-	if workerId := ctx.Value("worker_id"); workerId != nil {
+	if workerId := ctx.Value(workerIDContextKey{}); workerId != nil {
 		prefix = fmt.Sprintf("[Worker %d] ", workerId)
 	}
+	githubRepo := plan.Repository
 	client, err := forgejo.NewClient(config.ForgejoUrl,
 		forgejo.SetToken(config.ForgejoToken),
 		forgejo.SetContext(ctx),
@@ -46,19 +92,23 @@ func ForgejoMirror(ctx context.Context, githubRepo *github.Repository, config Co
 	if err != nil {
 		return Failed, err
 	}
-	forgejoRepo, resp, err := client.GetRepo(config.ForgejoUsername, *githubRepo.Name)
+	forgejoRepo, resp, err := client.GetRepo(plan.DestinationOwner, plan.DestinationName)
 	if err == nil {
 		log.Printf("%sSkipping repository %s. It already exists on Forgejo\n", prefix, forgejoRepo.FullName)
 		return Skipped, nil
 	}
 	if resp == nil || resp.StatusCode != http.StatusNotFound {
-		return Failed, fmt.Errorf("check Forgejo repository %s/%s: %w", config.ForgejoUsername, *githubRepo.Name, err)
+		return Failed, fmt.Errorf("check Forgejo repository %s/%s: %w", plan.DestinationOwner, plan.DestinationName, err)
+	}
+	if !limiter.reserve(plan.Source) {
+		log.Printf("%sDeferring repository %s because the starred creation limit was reached\n", prefix, githubRepo.GetFullName())
+		return Deferred, nil
 	}
 	if config.DryRun {
-		log.Printf("%s[DRY-RUN] Would create repository %s on Forgejo\n", prefix, *githubRepo.FullName)
+		log.Printf("%s[DRY-RUN] Would create repository %s as %s/%s on Forgejo\n", prefix, githubRepo.GetFullName(), plan.DestinationOwner, plan.DestinationName)
 		return WouldCreate, nil
 	}
-	log.Printf("%sCreating repository %s on Forgejo\n", prefix, *githubRepo.FullName)
+	log.Printf("%sCreating repository %s as %s/%s on Forgejo\n", prefix, githubRepo.GetFullName(), plan.DestinationOwner, plan.DestinationName)
 
 	githubAuth := ""
 	if config.GithubToken != nil {
@@ -66,10 +116,10 @@ func ForgejoMirror(ctx context.Context, githubRepo *github.Repository, config Co
 	}
 	option := forgejo.MigrateRepoOption{
 		AuthToken: githubAuth,
-		CloneAddr: *githubRepo.CloneURL,
-		RepoName:  *githubRepo.Name,
-		RepoOwner: config.ForgejoUsername,
-		Private:   *githubRepo.Private,
+		CloneAddr: githubRepo.GetCloneURL(),
+		RepoName:  plan.DestinationName,
+		RepoOwner: plan.DestinationOwner,
+		Private:   githubRepo.GetPrivate(),
 		Mirror:    true,
 	}
 	if githubRepo.Description != nil {
@@ -79,6 +129,6 @@ func ForgejoMirror(ctx context.Context, githubRepo *github.Repository, config Co
 	if err != nil {
 		return Failed, err
 	}
-	log.Printf("%sRepository %s created on Forgejo\n", prefix, *githubRepo.FullName)
+	log.Printf("%sRepository %s created on Forgejo as %s/%s\n", prefix, githubRepo.GetFullName(), plan.DestinationOwner, plan.DestinationName)
 	return Created, nil
 }

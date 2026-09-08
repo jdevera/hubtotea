@@ -7,6 +7,7 @@ import (
 
 type RepoSyncResult struct {
 	Name   string
+	Source RepositorySource
 	Result MirrorResult
 	Error  string
 }
@@ -16,21 +17,35 @@ type RepoFailure struct {
 	Error string `json:"error,omitempty"`
 }
 
+type OrganizationStats struct {
+	Name   string             `json:"name"`
+	Result OrganizationResult `json:"result"`
+	Error  string             `json:"error,omitempty"`
+}
+
 type RunStats struct {
-	RunCount            int           `json:"run_count"`
-	Status              string        `json:"status"`
-	StartedAt           time.Time     `json:"started_at"`
-	FinishedAt          *time.Time    `json:"finished_at,omitempty"`
-	DurationSeconds     float64       `json:"duration_seconds,omitempty"`
-	Error               string        `json:"error,omitempty"`
-	TotalRead           int           `json:"total_read"`
-	Created             int           `json:"created"`
-	Skipped             int           `json:"skipped"`
-	WouldCreate         int           `json:"would_create"`
-	Failed              int           `json:"failed"`
-	CreatedRepositories []string      `json:"created_repositories"`
-	WouldCreateRepos    []string      `json:"would_create_repositories"`
-	FailedRepositories  []RepoFailure `json:"failed_repositories"`
+	RunCount             int                `json:"run_count"`
+	Status               string             `json:"status"`
+	StartedAt            time.Time          `json:"started_at"`
+	FinishedAt           *time.Time         `json:"finished_at,omitempty"`
+	DurationSeconds      float64            `json:"duration_seconds,omitempty"`
+	Error                string             `json:"error,omitempty"`
+	TotalRead            int                `json:"total_read"`
+	OwnedDiscovered      int                `json:"owned_discovered"`
+	StarredDiscovered    int                `json:"starred_discovered"`
+	Duplicates           int                `json:"duplicates"`
+	Created              int                `json:"created"`
+	Skipped              int                `json:"skipped"`
+	WouldCreate          int                `json:"would_create"`
+	Failed               int                `json:"failed"`
+	Deferred             int                `json:"deferred"`
+	StarredBacklog       int                `json:"starred_backlog"`
+	StarredEnabled       bool               `json:"starred_enabled"`
+	StarredOrganization  *OrganizationStats `json:"starred_organization,omitempty"`
+	CreatedRepositories  []string           `json:"created_repositories"`
+	WouldCreateRepos     []string           `json:"would_create_repositories"`
+	DeferredRepositories []string           `json:"deferred_repositories"`
+	FailedRepositories   []RepoFailure      `json:"failed_repositories"`
 }
 
 func (s *RunStats) record(result RepoSyncResult) {
@@ -49,6 +64,15 @@ func (s *RunStats) record(result RepoSyncResult) {
 			Name:  result.Name,
 			Error: result.Error,
 		})
+	case Deferred:
+		s.Deferred++
+		s.DeferredRepositories = append(s.DeferredRepositories, result.Name)
+	}
+	if result.Source == StarredRepositorySource {
+		switch result.Result {
+		case WouldCreate, Failed, Deferred:
+			s.StarredBacklog++
+		}
 	}
 }
 
@@ -136,6 +160,11 @@ func cloneRunStats(stats *RunStats) *RunStats {
 	clone := *stats
 	clone.CreatedRepositories = append([]string(nil), stats.CreatedRepositories...)
 	clone.WouldCreateRepos = append([]string(nil), stats.WouldCreateRepos...)
+	clone.DeferredRepositories = append([]string(nil), stats.DeferredRepositories...)
 	clone.FailedRepositories = append([]RepoFailure(nil), stats.FailedRepositories...)
+	if stats.StarredOrganization != nil {
+		organization := *stats.StarredOrganization
+		clone.StarredOrganization = &organization
+	}
 	return &clone
 }

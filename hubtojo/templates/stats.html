@@ -145,6 +145,10 @@
 			border-radius: 4px;
 			padding: 2px 6px;
 		}
+		code,
+		li {
+			overflow-wrap: anywhere;
+		}
 		a {
 			color: var(--link);
 		}
@@ -213,6 +217,26 @@
 		</div>
 	</section>
 
+	{{ if .LastRun.StarredEnabled }}
+	<section>
+		<h2>Repository Sources</h2>
+		<div class="stats">
+			<div class="card"><div class="label">Owned discovered</div><div class="value">{{ .LastRun.OwnedDiscovered }}</div></div>
+			<div class="card"><div class="label">Starred discovered</div><div class="value">{{ .LastRun.StarredDiscovered }}</div></div>
+			<div class="card"><div class="label">Duplicates</div><div class="value">{{ .LastRun.Duplicates }}</div></div>
+			<div class="card"><div class="label">Starred backlog</div><div class="value">{{ .LastRun.StarredBacklog }}</div></div>
+			<div class="card"><div class="label">Deferred</div><div class="value">{{ .LastRun.Deferred }}</div></div>
+		</div>
+		{{ if .LastRun.StarredOrganization }}
+		<p>
+			Archive organization <code>{{ .LastRun.StarredOrganization.Name }}</code>:
+			<code>{{ .LastRun.StarredOrganization.Result }}</code>.
+		</p>
+		{{ if .LastRun.StarredOrganization.Error }}<p>Error: {{ .LastRun.StarredOrganization.Error }}</p>{{ end }}
+		{{ end }}
+	</section>
+	{{ end }}
+
 	{{ if .LastRun.CreatedRepositories }}
 	<section class="card">
 		<h2>New Repositories</h2>
@@ -224,6 +248,13 @@
 	<section class="card">
 		<h2>Dry Run Creates</h2>
 		<ul>{{ range .LastRun.WouldCreateRepos }}<li>{{ . }}</li>{{ end }}</ul>
+	</section>
+	{{ end }}
+
+	{{ if .LastRun.DeferredRepositories }}
+	<section class="card">
+		<h2>Deferred Starred Repositories</h2>
+		<ul>{{ range .LastRun.DeferredRepositories }}<li>{{ . }}</li>{{ end }}</ul>
 	</section>
 	{{ end }}
 

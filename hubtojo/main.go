@@ -5,30 +5,33 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/google/go-github/v63/github"
 )
 
 // Version of the application. It will be set during the build process.
 var Version = "dev"
 
-type repositoryLister func(context.Context, Config) ([]*github.Repository, error)
-type repositoryMirror func(context.Context, *github.Repository, Config) (MirrorResult, error)
+type repositoryLister func(context.Context, Config) (GithubRepositories, error)
+type repositoryMirror func(context.Context, RepositoryPlan, Config, *creationLimiter) (MirrorResult, error)
+type organizationEnsurer func(context.Context, Config) (OrganizationResult, error)
 type repositorySynchronizer func(context.Context, Config) (RunStats, error)
 
-func MirrorWorker(ctx context.Context, id int, wg *sync.WaitGroup, repos <-chan *github.Repository, stats chan<- RepoSyncResult, config Config, mirror repositoryMirror) {
+type workerIDContextKey struct{}
+
+func MirrorWorker(ctx context.Context, id int, wg *sync.WaitGroup, repos <-chan RepositoryPlan, stats chan<- RepoSyncResult, config Config, limiter *creationLimiter, mirror repositoryMirror) {
 	defer wg.Done()
 	log.Printf("[Worker %d] Starting\n", id)
-	ctx = context.WithValue(ctx, "worker_id", id)
-	for repo := range repos {
-		log.Printf("[Worker %d] Processing repository %s\n", id, *repo.FullName)
-		res, err := mirror(ctx, repo, config)
+	ctx = context.WithValue(ctx, workerIDContextKey{}, id)
+	for plan := range repos {
+		name := plan.Repository.GetFullName()
+		log.Printf("[Worker %d] Processing repository %s\n", id, name)
+		res, err := mirror(ctx, plan, config, limiter)
 		result := RepoSyncResult{
-			Name:   *repo.FullName,
+			Name:   name,
+			Source: plan.Source,
 			Result: res,
 		}
 		if err != nil {
-			log.Printf("[Worker %d] Error mirroring repository %s: %s\n", id, *repo.FullName, err)
+			log.Printf("[Worker %d] Error mirroring repository %s: %s\n", id, name, err)
 			result.Error = err.Error()
 		}
 		stats <- result
@@ -37,35 +40,63 @@ func MirrorWorker(ctx context.Context, id int, wg *sync.WaitGroup, repos <-chan 
 }
 
 func SyncRepoList(ctx context.Context, config Config) (RunStats, error) {
-	return syncRepoList(ctx, config, GetGithubRepos, ForgejoMirror)
+	return syncRepoList(ctx, config, GetGithubRepositories, EnsureStarredOrganization, ForgejoMirror)
 }
 
-func syncRepoList(ctx context.Context, config Config, listRepositories repositoryLister, mirror repositoryMirror) (RunStats, error) {
-	repos, err := listRepositories(ctx, config)
-	if err != nil {
-		return RunStats{}, err
-	}
-
-	log.Printf("Found %d repositories\n", len(repos))
-	for _, repo := range repos {
-		log.Printf("Repository -> name: %v, private=%v, fork=%v\n", *repo.FullName, *repo.Private, *repo.Fork)
-	}
-
-	repoChan := make(chan *github.Repository, len(repos))
-	statsChan := make(chan RepoSyncResult, len(repos))
-	var wg sync.WaitGroup
-
+func syncRepoList(ctx context.Context, config Config, listRepositories repositoryLister, ensureOrganization organizationEnsurer, mirror repositoryMirror) (RunStats, error) {
+	repositories, err := listRepositories(ctx, config)
 	resultsStats := RunStats{
-		TotalRead: len(repos),
+		StarredEnabled:    config.MirrorStarredRepos,
+		OwnedDiscovered:   len(repositories.Owned),
+		StarredDiscovered: len(repositories.Starred),
 	}
+	if err != nil {
+		return resultsStats, err
+	}
+	plans, err := PlanRepositories(config, repositories)
+	if err != nil {
+		return resultsStats, err
+	}
+	resultsStats.TotalRead = len(plans.Repositories)
+	resultsStats.Duplicates = plans.Duplicates
+
+	log.Printf("Found %d owned and %d starred repositories (%d unique)\n", plans.OwnedDiscovered, plans.StarredDiscovered, len(plans.Repositories))
+	usesStarredArchive := false
+	starredPlanned := 0
+	for _, plan := range plans.Repositories {
+		repository := plan.Repository
+		log.Printf("Repository -> name: %v, source=%s, destination=%s/%s, private=%v, fork=%v\n", repository.GetFullName(), plan.Source, plan.DestinationOwner, plan.DestinationName, repository.GetPrivate(), repository.GetFork())
+		if plan.Source == StarredRepositorySource {
+			starredPlanned++
+		}
+		usesStarredArchive = usesStarredArchive || plan.UsesStarredArchive
+	}
+
+	if usesStarredArchive {
+		organizationResult, ensureErr := ensureOrganization(ctx, config)
+		resultsStats.StarredOrganization = &OrganizationStats{
+			Name:   config.StarredOrg,
+			Result: organizationResult,
+		}
+		if ensureErr != nil {
+			resultsStats.StarredOrganization.Error = ensureErr.Error()
+			resultsStats.StarredBacklog = starredPlanned
+			return resultsStats, ensureErr
+		}
+	}
+
+	repoChan := make(chan RepositoryPlan, len(plans.Repositories))
+	statsChan := make(chan RepoSyncResult, len(plans.Repositories))
+	var wg sync.WaitGroup
+	limiter := newCreationLimiter(config.MaxStarredCreatesPerRun)
 
 	for workerId := 0; workerId < config.NumWorkers; workerId++ {
 		wg.Add(1)
-		go MirrorWorker(ctx, workerId, &wg, repoChan, statsChan, config, mirror)
+		go MirrorWorker(ctx, workerId, &wg, repoChan, statsChan, config, limiter, mirror)
 	}
 
-	for _, repo := range repos {
-		repoChan <- repo
+	for _, plan := range plans.Repositories {
+		repoChan <- plan
 	}
 	close(repoChan)
 
@@ -102,6 +133,9 @@ func syncOnce(ctx context.Context, config Config, synchronize repositorySynchron
 	log.Printf("  Skipped: %d\n", runStats.Skipped)
 	log.Printf("  WouldCreate: %d\n", runStats.WouldCreate)
 	log.Printf("  Failed: %d\n", runStats.Failed)
+	if runStats.StarredEnabled {
+		log.Printf("  Starred Backlog: %d\n", runStats.StarredBacklog)
+	}
 	log.Printf("--------------------------------------------------\n")
 	return runStats
 }

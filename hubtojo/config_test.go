@@ -37,6 +37,9 @@ func TestMakeConfigFromEnvResolvesCompleteConfiguration(t *testing.T) {
 	t.Setenv("HUBTOJO_MIRROR_PUBLIC_REPOS", "false")
 	t.Setenv("HUBTOJO_MIRROR_PRIVATE_REPOS", "true")
 	t.Setenv("HUBTOJO_MIRROR_FORKS", "true")
+	t.Setenv("HUBTOJO_MIRROR_STARRED_REPOS", "true")
+	t.Setenv("HUBTOJO_STARRED_ORG", "star-archive")
+	t.Setenv("HUBTOJO_MAX_STARRED_CREATES_PER_RUN", "11")
 	t.Setenv("HUBTOJO_DRY_RUN", "true")
 	t.Setenv("HUBTOJO_SYNC_INTERVAL", "42")
 	t.Setenv("HUBTOJO_RUN_TIMEOUT", "17")
@@ -55,11 +58,14 @@ func TestMakeConfigFromEnvResolvesCompleteConfiguration(t *testing.T) {
 	if config.GithubToken == nil || *config.GithubToken != "github-token" {
 		t.Fatal("GitHub token was not loaded")
 	}
-	if config.NumWorkers != 7 || config.SyncInterval != 42 || config.RunTimeout != 17*time.Second {
+	if config.NumWorkers != 7 || config.SyncInterval != 42 || config.RunTimeout != 17*time.Second || config.MaxStarredCreatesPerRun != 11 {
 		t.Fatalf("numeric configuration was not loaded: %+v", config)
 	}
-	if config.MirrorPublicRepos || !config.MirrorPrivateRepos || !config.MirrorForks || !config.DryRun {
+	if config.MirrorPublicRepos || !config.MirrorPrivateRepos || !config.MirrorForks || !config.MirrorStarredRepos || !config.DryRun {
 		t.Fatalf("boolean configuration was not loaded: %+v", config)
+	}
+	if config.StarredOrg != "star-archive" {
+		t.Fatalf("starred organization = %q, want star-archive", config.StarredOrg)
 	}
 	if config.WebAddr != "127.0.0.1:9090" {
 		t.Fatalf("web address = %q, want 127.0.0.1:9090", config.WebAddr)
@@ -102,6 +108,11 @@ func TestConfigValidateRejectsUnsafeNumericValues(t *testing.T) {
 			configure: func(config *Config) { config.RunTimeout = 0 },
 			wantError: "HUBTOJO_RUN_TIMEOUT",
 		},
+		{
+			name:      "negative starred create limit",
+			configure: func(config *Config) { config.MaxStarredCreatesPerRun = -1 },
+			wantError: "HUBTOJO_MAX_STARRED_CREATES_PER_RUN",
+		},
 	}
 
 	for _, tt := range tests {
@@ -125,6 +136,17 @@ func TestConfigValidateRejectsEmptyPrivateRepoToken(t *testing.T) {
 	err := config.validate()
 	if err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
 		t.Fatalf("validation error = %v, want GITHUB_TOKEN error", err)
+	}
+}
+
+func TestConfigValidateRequiresTokenAndOrganizationForStarredRepos(t *testing.T) {
+	config := validConfig()
+	config.MirrorStarredRepos = true
+	config.StarredOrg = ""
+
+	err := config.validate()
+	if err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") || !strings.Contains(err.Error(), "HUBTOJO_STARRED_ORG") {
+		t.Fatalf("validation error = %v, want token and organization errors", err)
 	}
 }
 

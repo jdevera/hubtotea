@@ -4,7 +4,8 @@
 
 # HubToJo 🐙 → ⚒️: Mirror GitHub repositories to Forgejo
 
-This program creates Forgejo mirrors of the GitHub repositories you specify.
+This program creates Forgejo mirrors of repositories owned or starred by a
+GitHub user.
 
 Best run with Docker. Forgejo 11.0.10 or newer is required.
 
@@ -47,15 +48,26 @@ curl http://localhost:8080/stats
     "finished_at": "2026-08-27T17:14:19Z",
     "duration_seconds": 12.4,
     "total_read": 5,
+    "owned_discovered": 3,
+    "starred_discovered": 4,
+    "duplicates": 2,
     "created": 2,
     "skipped": 2,
     "would_create": 0,
     "failed": 1,
+    "deferred": 0,
+    "starred_backlog": 1,
+    "starred_enabled": true,
+    "starred_organization": {
+      "name": "github-stars",
+      "result": "existing"
+    },
     "created_repositories": [
       "example/new-repository",
       "example/another-repository"
     ],
     "would_create_repositories": null,
+    "deferred_repositories": null,
     "failed_repositories": [
       {
         "name": "example/failed-repository",
@@ -86,10 +98,15 @@ Run statuses:
 | `completed_with_errors` | The run completed, but one or more repositories failed |
 | `error` | The run itself failed, such as when the GitHub repository list could not be fetched; details are in `error` |
 
-The repository arrays identify newly created mirrors, dry-run candidates, and
-individual failures. Empty arrays are currently encoded as `null`, so clients
-should treat `null` as an empty list. Result counters are finalized when a run
-completes; `current_run` reports lifecycle state rather than live progress.
+The repository arrays identify newly created mirrors, dry-run candidates,
+repositories deferred by the starred creation limit, and individual failures.
+Empty arrays are currently encoded as `null`, so clients should treat `null` as
+an empty list. `owned_discovered` and `starred_discovered` are source counts;
+`total_read` is the number remaining after deduplication. `starred_backlog`
+counts starred repositories that were not confirmed as mirrored, including
+dry-run candidates, failures, and deferred repositories. Result counters are
+finalized when a run completes; `current_run` reports lifecycle state rather
+than live progress.
 
 The web page, `/stats`, and `/metrics` do not require authentication. They never
 include configured tokens, but the web page and `/stats` may contain sensitive
@@ -126,6 +143,9 @@ HubToJo exports these application metrics:
 | `hubtojo_repository_results_total` | Repository outcomes labeled by `result` |
 | `hubtojo_last_run_status` | Last completed status represented as one-hot gauges |
 | `hubtojo_last_run_repository_results` | Repository outcomes from the last completed run |
+| `hubtojo_last_run_repositories_discovered` | Repositories found in the last run, labeled by `source` (`owned` or `starred`) |
+| `hubtojo_starred_repository_backlog` | Starred repositories not confirmed as mirrored in the last run |
+| `hubtojo_organization_operations_total` | Starred archive organization checks labeled by `result` |
 | `hubtojo_last_run_timestamp_seconds` | Completion time of the last run, or `0` before the first run |
 | `hubtojo_next_run_timestamp_seconds` | Scheduled next run, or `0` while running and in one-shot mode |
 | `hubtojo_sync_interval_seconds` | Configured synchronization interval |
@@ -133,9 +153,11 @@ HubToJo exports these application metrics:
 
 Run status labels are `success`, `completed_with_errors`, `error`, and
 `unknown`. Repository result labels are `created`, `skipped`, `would_create`,
-and `failed`. Repository names and error strings are deliberately excluded from
-metric labels to keep cardinality bounded; use `/stats` or logs for those
-details.
+and `failed`. Organization result labels are `created`, `existing`, and
+`failed`; a dry-run `would_create` organization is reported through `/stats`
+without incrementing that counter. Repository names and error strings are
+deliberately excluded from metric labels to keep cardinality bounded; use
+`/stats` or logs for those details.
 
 Useful PromQL queries include:
 
@@ -153,6 +175,9 @@ and (time() - hubtojo_last_run_timestamp_seconds > 2 * hubtojo_sync_interval_sec
 
 # Prometheus cannot scrape HubToJo
 up{job="hubtojo"} == 0
+
+# Starred repositories are waiting to be mirrored
+hubtojo_starred_repository_backlog > 0
 ```
 
 Metrics live in process memory and reset when HubToJo restarts. This is normal
@@ -183,8 +208,52 @@ their exact version and do not update floating tags or `:latest`.
 - Public Repos: All public repos of the given user, **excluding forks**
 - Private Repos: All private repos of the given user
 - Forks: All forks of the given user (they are always public)
+- Starred Repos: All repositories starred by the authenticated GitHub user
 
-Each of these groups can be enabled or disabled with the environment variables.
+Each group can be enabled or disabled with environment variables. Starred
+repositories are an explicit archive selection, so the public, private, and
+fork filters do not apply to them.
+
+## Starred repository archive
+
+Starred mirroring is disabled by default. Enable it with a GitHub token:
+
+```bash
+-e GITHUB_TOKEN="your GitHub token" \
+-e HUBTOJO_MIRROR_STARRED_REPOS=true
+```
+
+HubToJo validates that the token belongs to `GITHUB_USERNAME` and reads the
+authenticated user's stars. A fine-grained token needs read access to starring;
+private starred repositories are included only when the token can access them.
+
+Third-party stars are mirrored into one Forgejo organization, `github-stars` by
+default. HubToJo creates the organization when it is missing. If it already
+exists, the Forgejo token's user must be an organization owner because Forgejo
+requires ownership for repository migrations. In dry-run mode, a missing
+organization is reported but not created.
+
+Destinations use `github-stars/GITHUB_OWNER__REPOSITORY`, preserving the GitHub
+owner and avoiding clashes between repositories with the same name. Forgejo
+limits repository names to 100 characters. Names over that limit keep the
+owner, truncate the repository portion, and append the immutable GitHub
+repository ID, for example `owner__truncated--gh123456789`.
+
+Repositories owned by `GITHUB_USERNAME` keep the existing personal Forgejo
+destination even when starred, and duplicate GitHub repository IDs are handled
+once per run. Unstarring or removing a source repository never deletes or
+disables an existing Forgejo mirror. HubToJo also never deletes or renames the
+archive organization.
+
+HubToJo does not persist a GitHub-ID-to-Forgejo-name index. If a GitHub
+repository is renamed or transferred, a later run can create a mirror at the
+new readable destination; the old mirror remains because archival cleanup is
+intentionally non-destructive.
+
+By default, at most 25 missing starred repositories are attempted per run.
+Existing mirrors do not consume the limit; failed migration attempts do. Owned
+repositories are never limited. Set `HUBTOJO_MAX_STARRED_CREATES_PER_RUN=0` for
+unlimited starred creation attempts.
 
 ## Parameters
 
@@ -193,10 +262,13 @@ Each of these groups can be enabled or disabled with the environment variables.
 | `FORGEJO_URL`                   | The URL of the Forgejo instance that will mirror the repositories                | Yes       |         |
 | `FORGEJO_TOKEN`                 | The token to use when authenticating with the Forgejo API                        | Yes       |         |
 | `GITHUB_USERNAME`               | The GitHub username to mirror repositories from                                  | Yes       |         |
-| `GITHUB_TOKEN`                  | A GitHub token is required only when working with private repositories           | No        |         |
+| `GITHUB_TOKEN`                  | GitHub token; required for private or starred repositories                       | No        |         |
 | `HUBTOJO_MIRROR_PUBLIC_REPOS`   | Set to false or 0 to not mirror public repositories. This does not affect forks. | No        | `true`  |
 | `HUBTOJO_MIRROR_PRIVATE_REPOS`  | Set to true or 1 to mirror private repositories                                  | No        | `false` |
 | `HUBTOJO_MIRROR_FORKS`          | Set to true or 1 to mirror forks                                                 | No        | `false` |
+| `HUBTOJO_MIRROR_STARRED_REPOS`  | Set to true or 1 to mirror repositories starred by the authenticated user        | No        | `false` |
+| `HUBTOJO_STARRED_ORG`           | Forgejo organization used for third-party starred repositories                   | No        | `github-stars` |
+| `HUBTOJO_MAX_STARRED_CREATES_PER_RUN` | Maximum new starred migration attempts per run; 0 is unlimited             | No        | `25`    |
 | `HUBTOJO_DRY_RUN`               | Set to true or 1 to skip the write operations and instead just log them          | No        | `false` |
 | `HUBTOJO_NUM_WORKERS`           | The number of concurrent workers to use when mirroring repositories              | No        | `5`     |
 | `HUBTOJO_SYNC_INTERVAL`         | The interval in seconds to wait between syncs. Set to 0 to run only once         | No        | `3600`  |

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/go-github/v63/github"
 )
 
 func TestSyncOnceRecordsTopLevelErrors(t *testing.T) {
@@ -102,5 +104,95 @@ func TestRunEveryCancellationInterruptsWait(t *testing.T) {
 	}
 	if snapshot.NextRunAt != nil {
 		t.Fatal("next run remains set after cancellation")
+	}
+}
+
+func TestSyncRepoListArchivesStarredRepositoriesWithDeduplicationAndLimit(t *testing.T) {
+	owned := githubRepository(1, "source", "owned")
+	listRepositories := func(context.Context, Config) (GithubRepositories, error) {
+		return GithubRepositories{
+			Owned: []*github.Repository{owned},
+			Starred: []*github.Repository{
+				owned,
+				githubRepository(2, "other", "existing"),
+				githubRepository(3, "other", "created"),
+				githubRepository(4, "other", "failed"),
+				githubRepository(5, "other", "deferred"),
+			},
+		}, nil
+	}
+	organizationCalls := 0
+	ensureOrganization := func(context.Context, Config) (OrganizationResult, error) {
+		organizationCalls++
+		return OrganizationExisting, nil
+	}
+	mirror := func(_ context.Context, plan RepositoryPlan, _ Config, limiter *creationLimiter) (MirrorResult, error) {
+		switch plan.Repository.GetName() {
+		case "existing":
+			return Skipped, nil
+		case "failed":
+			if !limiter.reserve(plan.Source) {
+				return Deferred, nil
+			}
+			return Failed, errors.New("migration failed")
+		case "deferred":
+			if !limiter.reserve(plan.Source) {
+				return Deferred, nil
+			}
+			return Created, nil
+		default:
+			if !limiter.reserve(plan.Source) {
+				return Deferred, nil
+			}
+			return Created, nil
+		}
+	}
+
+	stats, err := syncRepoList(context.Background(), Config{
+		GithubUsername:          "source",
+		ForgejoUsername:         "forgejo-user",
+		StarredOrg:              "github-stars",
+		MirrorStarredRepos:      true,
+		MaxStarredCreatesPerRun: 2,
+		NumWorkers:              1,
+	}, listRepositories, ensureOrganization, mirror)
+	if err != nil {
+		t.Fatalf("synchronize repositories: %v", err)
+	}
+	if organizationCalls != 1 {
+		t.Fatalf("organization checks = %d, want 1", organizationCalls)
+	}
+	if stats.TotalRead != 5 || stats.OwnedDiscovered != 1 || stats.StarredDiscovered != 5 || stats.Duplicates != 1 {
+		t.Fatalf("unexpected discovery stats: %+v", stats)
+	}
+	if stats.Created != 2 || stats.Skipped != 1 || stats.Failed != 1 || stats.Deferred != 1 || stats.StarredBacklog != 2 {
+		t.Fatalf("unexpected result stats: %+v", stats)
+	}
+	if stats.StarredOrganization == nil || stats.StarredOrganization.Result != OrganizationExisting {
+		t.Fatalf("unexpected organization stats: %+v", stats.StarredOrganization)
+	}
+}
+
+func TestSyncRepoListDoesNotManageOrganizationWhenStarredMirroringIsDisabled(t *testing.T) {
+	ensureOrganization := func(context.Context, Config) (OrganizationResult, error) {
+		t.Fatal("legacy configuration attempted to manage a Forgejo organization")
+		return OrganizationFailed, nil
+	}
+	listRepositories := func(context.Context, Config) (GithubRepositories, error) {
+		return GithubRepositories{Owned: []*github.Repository{githubRepository(1, "source", "owned")}}, nil
+	}
+	mirror := func(context.Context, RepositoryPlan, Config, *creationLimiter) (MirrorResult, error) {
+		return Skipped, nil
+	}
+
+	stats, err := syncRepoList(context.Background(), Config{
+		ForgejoUsername: "forgejo-user",
+		NumWorkers:      1,
+	}, listRepositories, ensureOrganization, mirror)
+	if err != nil {
+		t.Fatalf("synchronize repositories: %v", err)
+	}
+	if stats.TotalRead != 1 || stats.Skipped != 1 || stats.StarredEnabled {
+		t.Fatalf("unexpected legacy stats: %+v", stats)
 	}
 }

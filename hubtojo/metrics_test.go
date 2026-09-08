@@ -20,12 +20,16 @@ func TestMetricsRecordRunLifecycle(t *testing.T) {
 	assertMetricValue(t, metrics.nextRunTimestamp, 0)
 
 	metrics.FinishRun(RunStats{
-		Status:      "completed_with_errors",
-		StartedAt:   startedAt,
-		Created:     2,
-		Skipped:     3,
-		WouldCreate: 4,
-		Failed:      1,
+		Status:              "completed_with_errors",
+		StartedAt:           startedAt,
+		OwnedDiscovered:     5,
+		StarredDiscovered:   4,
+		Created:             2,
+		Skipped:             3,
+		WouldCreate:         4,
+		Failed:              1,
+		StarredBacklog:      2,
+		StarredOrganization: &OrganizationStats{Result: OrganizationCreated},
 	}, finishedAt)
 
 	assertMetricValue(t, metrics.runInProgress, 0)
@@ -38,6 +42,10 @@ func TestMetricsRecordRunLifecycle(t *testing.T) {
 	assertMetricValue(t, metrics.repositoryResultsTotal.WithLabelValues("would_create"), 4)
 	assertMetricValue(t, metrics.repositoryResultsTotal.WithLabelValues("failed"), 1)
 	assertMetricValue(t, metrics.lastRunRepositoryResults.WithLabelValues("failed"), 1)
+	assertMetricValue(t, metrics.lastRunRepositoriesDiscovered.WithLabelValues("owned"), 5)
+	assertMetricValue(t, metrics.lastRunRepositoriesDiscovered.WithLabelValues("starred"), 4)
+	assertMetricValue(t, metrics.starredRepositoryBacklog, 2)
+	assertMetricValue(t, metrics.organizationOperations.WithLabelValues("created"), 1)
 	assertMetricValue(t, metrics.lastRunTimestamp, timestampSeconds(finishedAt))
 }
 
@@ -53,6 +61,9 @@ func TestNewMetricsInstanceStartsWithResetProcessState(t *testing.T) {
 	assertMetricValue(t, second.runsTotal.WithLabelValues("success"), 0)
 	assertMetricValue(t, second.repositoryResultsTotal.WithLabelValues("created"), 0)
 	assertMetricValue(t, second.lastRunStatus.WithLabelValues("success"), 0)
+	assertMetricValue(t, second.lastRunRepositoriesDiscovered.WithLabelValues("starred"), 0)
+	assertMetricValue(t, second.starredRepositoryBacklog, 0)
+	assertMetricValue(t, second.organizationOperations.WithLabelValues("created"), 0)
 	assertMetricValue(t, second.lastRunTimestamp, 0)
 }
 

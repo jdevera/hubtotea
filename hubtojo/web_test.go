@@ -24,6 +24,36 @@ func TestStatsPageRenders(t *testing.T) {
 	}
 }
 
+func TestStatsPageRendersStarredRepositoryState(t *testing.T) {
+	var output bytes.Buffer
+	store := NewStatsStore("test", 3600)
+	startedAt := time.Now().Add(-time.Second)
+	store.FinishRun(RunStats{
+		Status:               "success",
+		StartedAt:            startedAt,
+		StarredEnabled:       true,
+		OwnedDiscovered:      3,
+		StarredDiscovered:    12,
+		Duplicates:           2,
+		StarredBacklog:       4,
+		Deferred:             4,
+		DeferredRepositories: []string{"other/project"},
+		StarredOrganization: &OrganizationStats{
+			Name:   "github-stars",
+			Result: OrganizationExisting,
+		},
+	}, time.Now())
+
+	if err := statsPage.ExecuteTemplate(&output, "stats.html", store.Snapshot()); err != nil {
+		t.Fatalf("render stats page: %v", err)
+	}
+	for _, content := range []string{"Starred discovered", "github-stars", "Starred backlog", "other/project"} {
+		if !strings.Contains(output.String(), content) {
+			t.Fatalf("rendered stats page does not contain %q", content)
+		}
+	}
+}
+
 func TestStartWebServerReturnsBindError(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

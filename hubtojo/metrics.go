@@ -12,17 +12,22 @@ var runMetricStatuses = []string{"success", "completed_with_errors", "error", "u
 
 var repositoryMetricResults = []string{"created", "skipped", "would_create", "failed"}
 
+var organizationMetricResults = []string{"created", "existing", "failed"}
+
 type Metrics struct {
-	registry                 *prometheus.Registry
-	runInProgress            prometheus.Gauge
-	currentRunStartTimestamp prometheus.Gauge
-	runsTotal                *prometheus.CounterVec
-	repositoryResultsTotal   *prometheus.CounterVec
-	lastRunStatus            *prometheus.GaugeVec
-	lastRunRepositoryResults *prometheus.GaugeVec
-	lastRunTimestamp         prometheus.Gauge
-	nextRunTimestamp         prometheus.Gauge
-	runDuration              prometheus.Histogram
+	registry                      *prometheus.Registry
+	runInProgress                 prometheus.Gauge
+	currentRunStartTimestamp      prometheus.Gauge
+	runsTotal                     *prometheus.CounterVec
+	repositoryResultsTotal        *prometheus.CounterVec
+	lastRunStatus                 *prometheus.GaugeVec
+	lastRunRepositoryResults      *prometheus.GaugeVec
+	lastRunRepositoriesDiscovered *prometheus.GaugeVec
+	starredRepositoryBacklog      prometheus.Gauge
+	organizationOperations        *prometheus.CounterVec
+	lastRunTimestamp              prometheus.Gauge
+	nextRunTimestamp              prometheus.Gauge
+	runDuration                   prometheus.Histogram
 }
 
 func NewMetrics(version string, syncIntervalSeconds int) *Metrics {
@@ -58,6 +63,21 @@ func NewMetrics(version string, syncIntervalSeconds int) *Metrics {
 			Namespace: "hubtojo",
 			Name:      "last_run_repository_results",
 			Help:      "Repository result counts from the last completed synchronization run.",
+		}, []string{"result"}),
+		lastRunRepositoriesDiscovered: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "hubtojo",
+			Name:      "last_run_repositories_discovered",
+			Help:      "Repositories discovered during the last completed synchronization run by source.",
+		}, []string{"source"}),
+		starredRepositoryBacklog: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "hubtojo",
+			Name:      "starred_repository_backlog",
+			Help:      "Starred repositories discovered but not confirmed as mirrored during the last completed run.",
+		}),
+		organizationOperations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "hubtojo",
+			Name:      "organization_operations_total",
+			Help:      "Total number of Forgejo archive organization checks by outcome.",
 		}, []string{"result"}),
 		lastRunTimestamp: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "hubtojo",
@@ -102,6 +122,9 @@ func NewMetrics(version string, syncIntervalSeconds int) *Metrics {
 		metrics.repositoryResultsTotal,
 		metrics.lastRunStatus,
 		metrics.lastRunRepositoryResults,
+		metrics.lastRunRepositoriesDiscovered,
+		metrics.starredRepositoryBacklog,
+		metrics.organizationOperations,
 		metrics.lastRunTimestamp,
 		metrics.nextRunTimestamp,
 		metrics.runDuration,
@@ -114,6 +137,12 @@ func NewMetrics(version string, syncIntervalSeconds int) *Metrics {
 	for _, result := range repositoryMetricResults {
 		metrics.repositoryResultsTotal.WithLabelValues(result).Add(0)
 		metrics.lastRunRepositoryResults.WithLabelValues(result).Set(0)
+	}
+	for _, source := range []RepositorySource{OwnedRepositorySource, StarredRepositorySource} {
+		metrics.lastRunRepositoriesDiscovered.WithLabelValues(string(source)).Set(0)
+	}
+	for _, result := range organizationMetricResults {
+		metrics.organizationOperations.WithLabelValues(result).Add(0)
 	}
 
 	return metrics
@@ -152,6 +181,18 @@ func (m *Metrics) FinishRun(stats RunStats, finishedAt time.Time) {
 		count := float64(results[result])
 		m.repositoryResultsTotal.WithLabelValues(result).Add(count)
 		m.lastRunRepositoryResults.WithLabelValues(result).Set(count)
+	}
+	m.lastRunRepositoriesDiscovered.WithLabelValues(string(OwnedRepositorySource)).Set(float64(stats.OwnedDiscovered))
+	m.lastRunRepositoriesDiscovered.WithLabelValues(string(StarredRepositorySource)).Set(float64(stats.StarredDiscovered))
+	m.starredRepositoryBacklog.Set(float64(stats.StarredBacklog))
+	if stats.StarredOrganization != nil {
+		result := string(stats.StarredOrganization.Result)
+		for _, candidate := range organizationMetricResults {
+			if result == candidate {
+				m.organizationOperations.WithLabelValues(result).Inc()
+				break
+			}
+		}
 	}
 
 	m.lastRunTimestamp.Set(timestampSeconds(finishedAt))

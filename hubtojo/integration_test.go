@@ -23,8 +23,8 @@ func TestSynchronizationRunIsPublishedByStatsEndpoint(t *testing.T) {
 
 	githubClient := github.NewClient(githubServer.Client())
 	githubClient.BaseURL, _ = url.Parse(githubServer.URL + "/")
-	listRepositories := func(ctx context.Context, config Config) ([]*github.Repository, error) {
-		return getGithubRepos(ctx, githubClient, config)
+	listRepositories := func(ctx context.Context, config Config) (GithubRepositories, error) {
+		return getGithubRepositories(ctx, githubClient, config)
 	}
 	config := Config{
 		GithubUsername:    "source",
@@ -50,7 +50,7 @@ func TestSynchronizationRunIsPublishedByStatsEndpoint(t *testing.T) {
 	})
 
 	synchronize := func(ctx context.Context, config Config) (RunStats, error) {
-		return syncRepoList(ctx, config, listRepositories, ForgejoMirror)
+		return syncRepoList(ctx, config, listRepositories, EnsureStarredOrganization, ForgejoMirror)
 	}
 	runEvery(context.Background(), 0, runRecorders{store, metrics}, func(ctx context.Context, _ int) RunStats {
 		return syncOnce(ctx, config, synchronize)
@@ -78,6 +78,119 @@ func TestSynchronizationRunIsPublishedByStatsEndpoint(t *testing.T) {
 	}
 	assertIntegrationRunStats(t, snapshot.LastRun)
 	assertIntegrationMetrics(t, webServer.Addr)
+}
+
+func TestStarredSynchronizationCreatesArchiveOrganizationAndMirror(t *testing.T) {
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer github-token" {
+			http.Error(w, `{"message":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/user":
+			fmt.Fprint(w, `{"login":"source"}`)
+		case "/users/source/repos":
+			fmt.Fprint(w, `[{"id":1,"name":"owned","full_name":"source/owned","clone_url":"https://github.test/source/owned.git","private":false,"fork":false}]`)
+		case "/user/starred":
+			fmt.Fprint(w, `[
+				{"repo":{"id":1,"name":"owned","full_name":"source/owned","owner":{"login":"source"},"clone_url":"https://github.test/source/owned.git","private":false,"fork":false}},
+				{"repo":{"id":2,"name":"project","full_name":"other/project","owner":{"login":"other"},"clone_url":"https://github.test/other/project.git","private":false,"fork":false}}
+			]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer githubServer.Close()
+
+	type migrateRequest struct {
+		RepoName  string `json:"repo_name"`
+		RepoOwner string `json:"repo_owner"`
+		CloneAddr string `json:"clone_addr"`
+	}
+	organizationCreated := make(chan struct{}, 1)
+	migrations := make(chan migrateRequest, 1)
+	forgejoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/version":
+			fmt.Fprint(w, `{"version":"11.0.10"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/github-stars":
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"not found"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/orgs":
+			organizationCreated <- struct{}{}
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"username":"github-stars"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/owner/owned":
+			fmt.Fprint(w, `{"full_name":"owner/owned"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/github-stars/other__project":
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"not found"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/migrate":
+			var request migrateRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, `{"message":"invalid request"}`, http.StatusBadRequest)
+				return
+			}
+			migrations <- request
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"full_name":"github-stars/other__project"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer forgejoServer.Close()
+
+	githubClient := github.NewClient(githubServer.Client())
+	githubClient.BaseURL, _ = url.Parse(githubServer.URL + "/")
+	listRepositories := func(ctx context.Context, config Config) (GithubRepositories, error) {
+		return getGithubRepositories(ctx, githubClient, config)
+	}
+	githubToken := "github-token"
+	stats, err := syncRepoList(context.Background(), Config{
+		GithubUsername:          "source",
+		GithubToken:             &githubToken,
+		ForgejoUrl:              forgejoServer.URL,
+		ForgejoToken:            "forgejo-token",
+		ForgejoUsername:         "owner",
+		NumWorkers:              1,
+		MirrorPublicRepos:       true,
+		MirrorStarredRepos:      true,
+		StarredOrg:              "github-stars",
+		MaxStarredCreatesPerRun: 25,
+	}, listRepositories, EnsureStarredOrganization, ForgejoMirror)
+	if err != nil {
+		t.Fatalf("synchronize starred repositories: %v", err)
+	}
+	if stats.TotalRead != 2 || stats.OwnedDiscovered != 1 || stats.StarredDiscovered != 2 || stats.Duplicates != 1 {
+		t.Fatalf("unexpected discovery stats: %+v", stats)
+	}
+	if stats.Created != 1 || stats.Skipped != 1 || stats.Failed != 0 || stats.StarredBacklog != 0 {
+		t.Fatalf("unexpected result stats: %+v", stats)
+	}
+	if stats.StarredOrganization == nil || stats.StarredOrganization.Result != OrganizationCreated {
+		t.Fatalf("unexpected organization stats: %+v", stats.StarredOrganization)
+	}
+
+	select {
+	case <-organizationCreated:
+	default:
+		t.Fatal("archive organization was not created")
+	}
+	select {
+	case request := <-migrations:
+		want := migrateRequest{
+			RepoName:  "other__project",
+			RepoOwner: "github-stars",
+			CloneAddr: "https://github.test/other/project.git",
+		}
+		if request != want {
+			t.Fatalf("migration request = %+v, want %+v", request, want)
+		}
+	default:
+		t.Fatal("starred repository was not migrated")
+	}
 }
 
 func assertIntegrationMetrics(t *testing.T, addr string) {
